@@ -1,7 +1,7 @@
 """LangChain Customer Review Analyzer - Chains, Memory, and Structured Output"""
 
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain.output_parsers import ResponseSchema, StructuredOutputParser
 from langchain.chains import LLMChain, SequentialChain
 from langchain.memory import ConversationBufferMemory
