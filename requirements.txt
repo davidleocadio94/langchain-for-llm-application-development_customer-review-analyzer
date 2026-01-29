@@ -1,6 +1,6 @@
 langchain>=0.1.0,<0.3.0
 langchain-openai>=0.0.5
-gradio==4.44.1
+gradio>=5.16.0
 openai>=1.0.0
 python-dotenv
-huggingface_hub>=0.19.0,<0.25.0
+huggingface_hub>=0.25.0
