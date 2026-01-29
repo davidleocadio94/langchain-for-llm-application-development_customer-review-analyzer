@@ -4,3 +4,4 @@ gradio>=5.16.0
 openai>=1.0.0
 python-dotenv
 huggingface_hub>=0.25.0
+pydantic>=2.0.0,<2.11.0
