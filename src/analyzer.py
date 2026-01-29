@@ -2,71 +2,62 @@
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.output_parsers import ResponseSchema, StructuredOutputParser
-from langchain.chains import LLMChain, SequentialChain
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationChain
-
-
-# Structured output for review analysis
-sentiment_schema = ResponseSchema(
-    name="sentiment",
-    description="positive, negative, or neutral"
-)
-summary_schema = ResponseSchema(
-    name="summary",
-    description="One sentence summary of the review"
-)
-key_issues_schema = ResponseSchema(
-    name="key_issues",
-    description="List of any problems mentioned (empty list if none)"
-)
-is_urgent_schema = ResponseSchema(
-    name="is_urgent",
-    description="true if customer needs immediate help, false otherwise"
-)
-
-response_schemas = [sentiment_schema, summary_schema, key_issues_schema, is_urgent_schema]
-output_parser = StructuredOutputParser.from_response_schemas(response_schemas)
+from langchain_core.output_parsers import StrOutputParser
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+import json
+import re
 
 
 def analyze_review(review_text: str) -> dict:
     """Analyze a customer review and return structured output."""
     llm = ChatOpenAI(temperature=0)
 
-    format_instructions = output_parser.get_format_instructions()
-
     review_template = """
-    For the following customer review, extract the following information:
+    For the following customer review, extract the following information and return as JSON:
 
-    sentiment: Is the sentiment positive, negative, or neutral?
-    summary: Provide a one sentence summary of the review.
-    key_issues: List any problems mentioned (empty list if none).
-    is_urgent: Is immediate help needed (true or false)?
+    - sentiment: Is the sentiment positive, negative, or neutral?
+    - summary: Provide a one sentence summary of the review.
+    - key_issues: List any problems mentioned (empty list if none).
+    - is_urgent: Is immediate help needed (true or false as string)?
 
-    text: {review_text}
+    Review: {review_text}
 
-    {format_instructions}
+    Return ONLY valid JSON in this exact format:
+    {{"sentiment": "...", "summary": "...", "key_issues": [...], "is_urgent": "true" or "false"}}
     """
 
     prompt = ChatPromptTemplate.from_template(template=review_template)
-    messages = prompt.format_messages(
-        review_text=review_text,
-        format_instructions=format_instructions
-    )
+    chain = prompt | llm | StrOutputParser()
 
-    response = llm(messages)
-    output_dict = output_parser.parse(response.content)
+    response = chain.invoke({"review_text": review_text})
+
+    # Parse JSON from response
+    try:
+        # Find JSON in response
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            output_dict = json.loads(json_match.group())
+        else:
+            output_dict = json.loads(response)
+    except json.JSONDecodeError:
+        output_dict = {
+            "sentiment": "unknown",
+            "summary": response,
+            "key_issues": [],
+            "is_urgent": "false"
+        }
 
     return output_dict
 
 
 def analyze_and_respond(review_text: str) -> dict:
-    """Analyze a review using a sequential chain and generate a response."""
+    """Analyze a review using chained prompts and generate a response."""
     llm = ChatOpenAI(temperature=0)
+    parser = StrOutputParser()
 
-    # Chain 1 - Analyze Review
-    first_prompt = ChatPromptTemplate.from_template(
+    # Step 1 - Analyze Review
+    analysis_prompt = ChatPromptTemplate.from_template(
         """Analyze the following customer review and provide:
         - Sentiment (positive, negative, or neutral)
         - Main issue (if any)
@@ -75,19 +66,21 @@ def analyze_and_respond(review_text: str) -> dict:
         Review: {review}
         """
     )
-    chain_one = LLMChain(llm=llm, prompt=first_prompt, output_key="analysis")
+    analysis_chain = analysis_prompt | llm | parser
+    analysis = analysis_chain.invoke({"review": review_text})
 
-    # Chain 2 - Detect Language
-    second_prompt = ChatPromptTemplate.from_template(
+    # Step 2 - Detect Language
+    language_prompt = ChatPromptTemplate.from_template(
         """What language is the following review written in? Just provide the language name.
 
         Review: {review}
         """
     )
-    chain_two = LLMChain(llm=llm, prompt=second_prompt, output_key="language")
+    language_chain = language_prompt | llm | parser
+    language = language_chain.invoke({"review": review_text})
 
-    # Chain 3 - Generate Response
-    third_prompt = ChatPromptTemplate.from_template(
+    # Step 3 - Generate Response
+    response_prompt = ChatPromptTemplate.from_template(
         """Based on the following analysis and detected language, write a professional customer service response.
         Write the response in {language}.
 
@@ -96,18 +89,15 @@ def analyze_and_respond(review_text: str) -> dict:
         Customer service response:
         """
     )
-    chain_three = LLMChain(llm=llm, prompt=third_prompt, output_key="response")
+    response_chain = response_prompt | llm | parser
+    response = response_chain.invoke({"analysis": analysis, "language": language})
 
-    # Create Sequential Chain
-    overall_chain = SequentialChain(
-        chains=[chain_one, chain_two, chain_three],
-        input_variables=["review"],
-        output_variables=["analysis", "language", "response"],
-        verbose=False
-    )
-
-    result = overall_chain({"review": review_text})
-    return result
+    return {
+        "review": review_text,
+        "analysis": analysis,
+        "language": language,
+        "response": response
+    }
 
 
 # Conversation memory for interactive analysis
@@ -116,20 +106,34 @@ class ReviewAssistant:
 
     def __init__(self):
         self.llm = ChatOpenAI(temperature=0)
-        self.memory = ConversationBufferMemory()
-        self.conversation = ConversationChain(
-            llm=self.llm,
-            memory=self.memory,
-            verbose=False
-        )
+        self.history = ChatMessageHistory()
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a helpful customer service assistant that helps analyze and respond to customer reviews."),
+            ("placeholder", "{history}"),
+            ("human", "{input}")
+        ])
+        self.chain = self.prompt | self.llm | StrOutputParser()
 
     def chat(self, message: str) -> str:
         """Send a message and get a response."""
-        return self.conversation.predict(input=message)
+        # Get history as list of messages
+        history_messages = self.history.messages
+
+        # Invoke chain with history
+        response = self.chain.invoke({
+            "input": message,
+            "history": history_messages
+        })
+
+        # Add to history
+        self.history.add_user_message(message)
+        self.history.add_ai_message(response)
+
+        return response
 
     def clear_memory(self):
         """Clear conversation history."""
-        self.memory.clear()
+        self.history.clear()
 
 
 # Global assistant instance
