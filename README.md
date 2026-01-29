@@ -1,3 +1,14 @@
+---
+title: Customer Review Analyzer
+emoji: 💬
+colorFrom: purple
+colorTo: pink
+sdk: gradio
+sdk_version: 5.12.0
+app_file: app.py
+pinned: false
+---
+
 # Customer Review Analyzer
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-HuggingFace%20Spaces-blue)](https://huggingface.co/spaces/davidleocadio94DLAI/langchain-for-llm-application-development_customer-review-analyzer)
